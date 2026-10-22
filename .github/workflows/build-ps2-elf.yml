@@ -69,6 +69,13 @@ jobs:
           "$RUNNER_TEMP/langenv/bin/python" "$RUNNER_TEMP/lang_compiler.py" --make_header --base lng_tmpl/_base.yml include/lang_autogen.h
           "$RUNNER_TEMP/langenv/bin/python" "$RUNNER_TEMP/lang_compiler.py" --make_source --base lng_tmpl/_base.yml src/lang_internal.c
 
+      - name: Fetch lwNBD module
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/bignaux/lwNBD.git modules/network/lwNBD
+          git -C modules/network/lwNBD checkout 15f1c14536d662e2e00d38d0aa91ef24149e8b96
+
       - name: Build launcher
         run: make GSM1080P=1
 
