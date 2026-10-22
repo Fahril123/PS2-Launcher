@@ -64,7 +64,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/langenv"
-          "$RUNNER_TEMP/langenv/bin/pip" install --disable-pip-version-check PyYAML==6.0
+          "$RUNNER_TEMP/langenv/bin/pip" install --disable-pip-version-check --only-binary=:all: PyYAML==6.0.2
           curl --fail --location --retry 3 --output "$RUNNER_TEMP/lang_compiler.py" https://raw.githubusercontent.com/ps2homebrew/Open-PS2-Loader/b3a2199795fe89ba7e2dd7b843354472dff2c3eb/lang_compiler.py
           "$RUNNER_TEMP/langenv/bin/python" "$RUNNER_TEMP/lang_compiler.py" --make_header --base lng_tmpl/_base.yml include/lang_autogen.h
           "$RUNNER_TEMP/langenv/bin/python" "$RUNNER_TEMP/lang_compiler.py" --make_source --base lng_tmpl/_base.yml src/lang_internal.c
