@@ -1,0 +1,67 @@
+diff --git a/src/gui.c b/src/gui.c
+index f86b786..0fb19df 100644
+--- a/src/gui.c
++++ b/src/gui.c
+@@ -106,6 +106,8 @@ static int transIndex;
+ static GSTEXTURE gBackgroundTex;
+ static int pperm[512];
+ static float fadetbl[FADE_SIZE + 1];
++static short ps3WaveSine[256];
++static unsigned int ps3WavePhase;
+ 
+ static VU_VECTOR pgrad3[12] = {{1, 1, 0, 1}, {-1, 1, 0, 1}, {1, -1, 0, 1}, {-1, -1, 0, 1}, {1, 0, 1, 1}, {-1, 0, 1, 1}, {1, 0, -1, 1}, {-1, 0, -1, 1}, {0, 1, 1, 1}, {0, -1, 1, 1}, {0, 1, -1, 1}, {0, -1, -1, 1}};
+@@ -160,6 +162,10 @@ void guiInit(void)
+ 
+         fadetbl[i] = t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+     }
++
++    for (i = 0; i < 256; ++i)
++        ps3WaveSine[i] = (short)(sinf((float)i * 0.024543693f) * 1000.0f);
++    ps3WavePhase = 0;
+ }
+ 
+ void guiEnd()
+@@ -1340,7 +1346,40 @@ u8 gPS5BgColorB = 0;
+ 
+ void guiDrawBGPlasma()
+ {
+     if (gPS5Mode) {
+-        rmDrawRectPrecise(0, 0, screenWidth, screenHeight, GS_SETREG_RGBA(0, 0, 0, 0x80));
++        // PS3 XMB-inspired blue gradient and slowly moving wave ribbons.
++        // Draw a small set of horizontal bands to keep the background cheap on the EE.
++        int y;
++        for (y = 0; y < 480; y += 20) {
++            int t = y * 255 / 480;
++            int r = 12 - (t * 8 / 255);
++            int g = 42 - (t * 24 / 255);
++            int b = 102 - (t * 58 / 255);
++            rmDrawRect(0, y, 640, 20, GS_SETREG_RGBA(r, g, b, 0x80));
++        }
++
++        int band;
++        for (band = 0; band < 7; ++band) {
++            int x = 0;
++            int idx = (int)(ps3WavePhase + band * 9) & 0xFF;
++            int idx2 = (int)((ps3WavePhase >> 1) + band * 5) & 0xFF;
++            int prevY = 222 + (ps3WaveSine[idx] * 48 / 1000) + (ps3WaveSine[idx2] * 24 / 1000) + (band - 3) * 13;
++            int distance = band - 3;
++            int alpha = 0x3A - (distance < 0 ? -distance : distance) * 7;
++            u64 color = GS_SETREG_RGBA(0x28 + band * 3, 0x88 + band * 4, 0xE8, alpha);
++
++            for (x = 20; x <= 640; x += 20) {
++                int waveX = x * 2 * 256 / 640;
++                int waveX2 = x * 256 / 640;
++                int waveY = 222 +
++                            (ps3WaveSine[(waveX + ps3WavePhase + band * 9) & 0xFF] * 48 / 1000) +
++                            (ps3WaveSine[(waveX2 + (ps3WavePhase >> 1) + band * 5) & 0xFF] * 24 / 1000) +
++                            (band - 3) * 13;
++                rmDrawLine(x - 20, prevY, x, waveY, color);
++                prevY = waveY;
++            }
++        }
++
++        ps3WavePhase++;
+         return;
+     }
+ 
+    int x, y;
