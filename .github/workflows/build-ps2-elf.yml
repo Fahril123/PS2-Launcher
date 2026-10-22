@@ -59,6 +59,20 @@ jobs:
           git -c core.autocrlf=false apply --check --ignore-space-change --ignore-whitespace ps2-launcher-gsm-1080p.patch
           git -c core.autocrlf=false apply --ignore-space-change --ignore-whitespace ps2-launcher-gsm-1080p.patch
 
+      - name: Apply PS3-style animated background patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          patch = Path("ps2-launcher-ps3-background.patch")
+          data = patch.read_bytes().replace(b"\r\n", b"\n")
+          patch.write_bytes(data)
+          PY
+          git -c core.autocrlf=false apply --check --ignore-space-change --ignore-whitespace ps2-launcher-ps3-background.patch
+          git -c core.autocrlf=false apply --ignore-space-change --ignore-whitespace ps2-launcher-ps3-background.patch
+
       - name: Generate language sources
         shell: bash
         run: |
@@ -94,14 +108,14 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -f PS2L.ELF
           if ! git diff --cached --quiet; then
-            git commit -m "Add experimental GSM 1080p PS2L.ELF"
+            git commit -m "Update PS2L.ELF with PS3-style background"
             git push origin HEAD:main
           fi
 
       - name: Upload ELF artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ps2-launcher-gsm-1080p
+          name: ps2-launcher-1080p-ps3-background
           path: PS2L.ELF
           if-no-files-found: error
           retention-days: 14
