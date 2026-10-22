@@ -38,9 +38,26 @@ jobs:
           } >> "$GITHUB_PATH"
 
       - name: Apply GSM 1080p patch
+        shell: bash
         run: |
-          git apply --check ps2-launcher-gsm-1080p.patch
-          git apply ps2-launcher-gsm-1080p.patch
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          patch = Path("ps2-launcher-gsm-1080p.patch")
+          data = patch.read_bytes().replace(b"\r\n", b"\n")
+          patch.write_bytes(data)
+          paths = {
+              line.split(" b/", 1)[1]
+              for line in data.decode("utf-8").splitlines()
+              if line.startswith("diff --git a/") and " b/" in line
+          }
+          for name in paths:
+              path = Path(name)
+              path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n"))
+          PY
+          git -c core.autocrlf=false apply --check --ignore-space-change --ignore-whitespace ps2-launcher-gsm-1080p.patch
+          git -c core.autocrlf=false apply --ignore-space-change --ignore-whitespace ps2-launcher-gsm-1080p.patch
 
       - name: Build launcher
         run: make GSM1080P=1
