@@ -1,0 +1,57 @@
+name: Build PS2 Launcher ELF
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install PS2DEV toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PS2DEV="$RUNNER_TEMP/ps2dev"
+          mkdir -p "$PS2DEV"
+          curl --fail --location --retry 3 \
+            --output "$RUNNER_TEMP/ps2dev.tar.gz" \
+            https://github.com/ps2dev/ps2dev/releases/download/latest/ps2dev-ubuntu-latest.tar.gz
+          tar -xzf "$RUNNER_TEMP/ps2dev.tar.gz" --strip-components=1 -C "$PS2DEV"
+
+          {
+            echo "PS2DEV=$PS2DEV"
+            echo "PS2SDK=$PS2DEV/ps2sdk"
+            echo "GSKIT=$PS2DEV/gsKit"
+          } >> "$GITHUB_ENV"
+          {
+            echo "$PS2DEV/bin"
+            echo "$PS2DEV/ee/bin"
+            echo "$PS2DEV/iop/bin"
+            echo "$PS2DEV/dvp/bin"
+            echo "$PS2DEV/ps2sdk/bin"
+          } >> "$GITHUB_PATH"
+
+      - name: Apply GSM 1080p patch
+        run: |
+          git apply --check ps2-launcher-gsm-1080p.patch
+          git apply ps2-launcher-gsm-1080p.patch
+
+      - name: Build launcher
+        run: make GSM1080P=1
+
+      - name: Check ELF output
+        run: test -s PS2L.ELF
+
+      - name: Upload ELF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ps2-launcher-gsm-1080p
+          path: PS2L.ELF
+          if-no-files-found: error
+          retention-days: 14
