@@ -77,7 +77,11 @@ jobs:
           git -C modules/network/lwNBD checkout 15f1c14536d662e2e00d38d0aa91ef24149e8b96
 
       - name: Build launcher
-        run: make GSM1080P=1
+        shell: bash
+        run: |
+          set -euo pipefail
+          make GSM1080P=1 NOT_PACKED=1
+          cp opl.elf PS2L.ELF
 
       - name: Check ELF output
         run: test -s PS2L.ELF
