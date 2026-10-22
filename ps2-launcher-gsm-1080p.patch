@@ -1,0 +1,301 @@
+diff --git a/Makefile b/Makefile
+index 0d884c9..3db30b3 100644
+--- a/Makefile
++++ b/Makefile
+@@ -36,6 +36,10 @@ IGS ?= $(EXTRA_FEATURES)
+ #Enables/disables pad emulator
+ PADEMU ?= 1
+ 
++# Include the GSM-synthetic progressive 1080p mode. It is appended to the mode list so existing
++# per-game $GSMVMode values keep their meaning. Some displays/adapters will not sync this raster.
++GSM1080P ?= 1
++
+ #Enables/disables building of an edition of OPL that will support the DTL-T10000 (SDK v2.3+)
+ DTL_T10000 ?= 0
+ 
+@@ -138,6 +142,11 @@ else
+   UDNL_OUT = $(PS2SDK)/iop/irx/udnl.irx
+ endif
+ 
++ifeq ($(GSM1080P),1)
++  EE_CFLAGS += -DGSM_1080P
++  EECORE_EXTRA_FLAGS += GSM1080P=1
++endif
++
+ ifeq ($(IGS),1)
+   EE_CFLAGS += -DIGS
+   IGS_FLAGS = IGS=1
+diff --git a/README.md b/README.md
+index 6500513..41e404c 100644
+--- a/README.md
++++ b/README.md
+@@ -71,6 +71,7 @@ A modern PlayStation 2 game launcher focused on delivering a cleaner, faster, an
+         - Standard
+         - 720p
+         - 1080i
++        - 1080p @ 60Hz (experimental GSM mode; display and adapter support varies)
+         - NTSC
+         - NTSC Non-Interlaced
+         - PAL
+diff --git a/ee_core/Makefile b/ee_core/Makefile
+index ffe7440..72c3db2 100644
+--- a/ee_core/Makefile
++++ b/ee_core/Makefile
+@@ -32,6 +32,10 @@ ifeq ($(DTL_T10000),1)
+     EE_CFLAGS += -D_DTL_T10000
+ endif
+ 
++ifeq ($(GSM1080P),1)
++    EE_CFLAGS += -DGSM_1080P
++endif
++
+ ifeq ($(LOAD_DEBUG_MODULES),1)
+ EE_CFLAGS += -D__LOAD_DEBUG_MODULES
+     ifeq ($(DECI2_DEBUG),1)
+diff --git a/ee_core/include/gsm_defines.h b/ee_core/include/gsm_defines.h
+index ce65903..8c20c20 100644
+--- a/ee_core/include/gsm_defines.h
++++ b/ee_core/include/gsm_defines.h
+@@ -32,6 +32,7 @@
+ 
+ #Add - on video modes(made possible by SP193 and reprep)
+ GS_MODE_DTV_576P=0x53
++GS_MODE_DTV_1080P=0x54
+ 
+ #GSMSourceSetGsCrt
+ .equ Source_INT,      0 # HALF
+diff --git a/ee_core/src/gsm_api.c b/ee_core/src/gsm_api.c
+index 606a5cf..6571cb9 100644
+--- a/ee_core/src/gsm_api.c
++++ b/ee_core/src/gsm_api.c
+@@ -28,6 +28,7 @@ extern void (*Old_SetGsCrt)(short int interlace, short int mode, short int ffmd)
+ #define GS_MODE_NTSC 0x02
+ // PAL
+ #define GS_MODE_PAL  0x03
++#define GS_MODE_DTV_1080P 0x54
+ 
+ struct GSMDestSetGsCrt
+ {
+@@ -110,7 +111,8 @@ void UpdateGSMParams(s16 interlace, s16 mode, s16 ffmd, u64 display, u64 syncv,
+     GSMFlags.FIELD_fix = (FIELD_fix ? (1 << 2) : 0);
+     GSMFlags.gs576P_param = (k576p_fix ? (1 << 1) : 0) | (hvParam & 1);
+ 
+-    if (kGsDxDyOffsetSupported && (!(mode >= GS_MODE_NTSC && mode <= GS_MODE_PAL))) {
++    // 1080p is GSM-synthetic with no ROM SetGsCrt entry, so its display offsets cannot be queried.
++    if (kGsDxDyOffsetSupported && mode != GS_MODE_DTV_1080P && (!(mode >= GS_MODE_NTSC && mode <= GS_MODE_PAL))) {
+         _GetGsDxDyOffset(mode, &gs_DX, &gs_DY, &gs_DW, &gs_DH);
+         GSMFlags.dx_offset += gs_DX;
+         GSMFlags.dy_offset += gs_DY;
+diff --git a/ee_core/src/gsm_engine.S b/ee_core/src/gsm_engine.S
+index 168d66f..b76df3f 100644
+--- a/ee_core/src/gsm_engine.S
++++ b/ee_core/src/gsm_engine.S
+@@ -168,6 +168,23 @@ Hook_SetGsCrt:
+  * Otherwise, call the original SetGsCrt() syscall handler and let it configure the GS for us.
+  */
+ 
++#ifdef GSM_1080P
++    li      $a3, GS_MODE_DTV_1080P
++    bne     $a1, $a3, Chk_DTV_576P
++    nop
++
++    # Mode 0x54 has no ROM SetGsCrt handler. Program its synthetic raster directly.
++    # Temporarily disarm the GS write breakpoint so timing-sensitive PLL writes are not
++    # rewritten by GSHandler; Skip_Call_Original_SetGsCrt re-arms it below.
++    jal     Disable_GSBreakpoint
++    nop
++    jal     DTV_1080P
++    nop
++    b       Skip_Call_Original_SetGsCrt
++    nop
++
++Chk_DTV_576P:
++#endif
+     li      $a3, GS_MODE_DTV_576P
+     la      $t0, GSMFlags
+     bne     $a1, $a3, Call_SetGsCrt
+diff --git a/ee_core/src/gsm_engine_adv.S b/ee_core/src/gsm_engine_adv.S
+index 8b78937..4ad51df 100644
+--- a/ee_core/src/gsm_engine_adv.S
++++ b/ee_core/src/gsm_engine_adv.S
+@@ -127,6 +127,95 @@ DTV576P_end:
+ 
+ # -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 
++#ifdef GSM_1080P
++.ent DTV_1080P
++DTV_1080P:
++    # $v0 = GS base address
++    lui     $v0, (GS_BASE >> 16)
++
++    # Reset the PCRTC and PLL for the synthetic progressive 1080p raster.
++    lui     $v1, 0x0003
++    ori     $v1, 0x4223
++    dsll    $v1, 16
++    ori     $v1, 0x04B1
++    sd      $v1, GS_SMODE1($v0)
++
++    # GS revisions >= 0x19 use revised horizontal sync timing.
++    ld      $v1, GS_CSR($v0)
++    dsrl    $v1, 16
++    andi    $v1, 0xFF
++    sltiu   $v1, 0x19
++    bnez    $v1, DTV_1080P_oldGS
++    nop
++
++    lui     $v1, 0x0003
++    ori     $v1, 0x4420
++    dsll    $v1, 16
++    ori     $v1, 0x0B04
++    dsll    $v1, 16
++    ori     $v1, 0x182D
++    sd      $v1, GS_SYNCH1($v0)
++    lui     $v1, 0x0020
++    ori     $v1, 0xFB61
++    sd      $v1, GS_SYNCH2($v0)
++    b       DTV_1080P_syncv
++    nop
++
++DTV_1080P_oldGS:
++    lui     $v1, 0x0003
++    ori     $v1, 0x4420
++    dsll    $v1, 16
++    ori     $v1, 0x0B04
++    dsll    $v1, 16
++    ori     $v1, 0x3829
++    sd      $v1, GS_SYNCH1($v0)
++    lui     $v1, 0x0020
++    ori     $v1, 0xEB63
++    sd      $v1, GS_SYNCH2($v0)
++
++DTV_1080P_syncv:
++    lui     $v1, 0x0150
++    ori     $v1, 0xE002
++    dsll    $v1, 16
++    ori     $v1, 0x01C0
++    dsll    $v1, 16
++    ori     $v1, 0x0005
++    sd      $v1, GS_SYNCV($v0)
++
++    # Progressive output with the established 1080p GSM refresh value.
++    sd      $zero, GS_SMODE2($v0)
++    li      $v1, 4
++    sd      $v1, GS_SRFSH($v0)
++
++    # Keep reset asserted while the PLL settles, then release it with sync enabled.
++    lui     $v1, 0x0003
++    ori     $v1, 0x4223
++    dsll    $v1, 16
++    ori     $v1, 0x04B1
++    sd      $v1, GS_SMODE1($v0)
++    li      $v1, 0x7A120
++DTV_1080P_delay:
++    vnop
++    vnop
++    addiu   $v1, $v1, -1
++    vnop
++    vnop
++    bnez    $v1, DTV_1080P_delay
++    nop
++
++    lui     $v1, 0x0003
++    ori     $v1, 0x4220
++    dsll    $v1, 16
++    ori     $v1, 0x04B1
++    sd      $v1, GS_SMODE1($v0)
++
++    jr      $ra
++    nop
++.end DTV_1080P
++#endif
++
++# -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
++
+ # ----------------------------
+ # SMODE1
+ # .--------.-------.---------------.----------------------------------.-------.
+diff --git a/include/renderman.h b/include/renderman.h
+index f780fb9..256d8d3 100644
+--- a/include/renderman.h
++++ b/include/renderman.h
+@@ -16,6 +16,7 @@
+ 
+ /// DTV 576 Progressive Scan (720x576). Not available in ROM v1.70 and earlier.
+ #define GS_MODE_DTV_576P 0x53
++#define GS_MODE_DTV_1080P 0x54
+ 
+ #define DIM_UNDEF -1
+ 
+diff --git a/src/gsm.c b/src/gsm.c
+index d027aa2..d0087f0 100644
+--- a/src/gsm.c
++++ b/src/gsm.c
+@@ -85,7 +85,7 @@ void PrepareGSM(char *cmdline, struct GsmConfig_t *config)
+     // Therefore there are many variables involved here that can lead us to success or fail, depending on the already mentioned circumstances.
+     //
+     // clang-format off
+-    static const predef_vmode_struct predef_vmode[29] = {
++    static const predef_vmode_struct predef_vmode[] = {
+         //                                                            DH    DW   MAGV MAGH  DY   DX              VS  VDP  VBPE  VBP VFPE  VFP
+         {GS_INTERLACED,    GS_MODE_NTSC,        GS_FIELD, makeDISPLAY(447,  2559, 0,   3,   46,  700), makeSYNCV(6,  480,  6,    26,  6,   1)},
+         {GS_INTERLACED,    GS_MODE_NTSC,        GS_FRAME, makeDISPLAY(223,  2559, 0,   3,   26,  700), makeSYNCV(6,  480,  6,    26,  6,   2)},
+@@ -115,14 +115,22 @@ void PrepareGSM(char *cmdline, struct GsmConfig_t *config)
+         {GS_NONINTERLACED, GS_MODE_VGA_1024_75, GS_FRAME, makeDISPLAY(767,  1023, 0,   0,   30,  260), makeSYNCV(3,  768,  0,    28,  0,   1)},
+         {GS_NONINTERLACED, GS_MODE_VGA_1024_85, GS_FRAME, makeDISPLAY(767,  1023, 0,   0,   30,  290), makeSYNCV(3,  768,  0,    36,  0,   1)},
+         {GS_NONINTERLACED, GS_MODE_VGA_1280_60, GS_FRAME, makeDISPLAY(1023, 1279, 1,   1,   40,  350), makeSYNCV(3,  1024, 0,    38,  0,   1)},
+-        {GS_NONINTERLACED, GS_MODE_VGA_1280_75, GS_FRAME, makeDISPLAY(1023, 1279, 1,   1,   40,  350), makeSYNCV(3,  1024, 0,    38,  0,   1)}}; //ends predef_vmode definition
++        {GS_NONINTERLACED, GS_MODE_VGA_1280_75, GS_FRAME, makeDISPLAY(1023, 1279, 1,   1,   40,  350), makeSYNCV(3,  1024, 0,    38,  0,   1)},
++#ifdef GSM_1080P
++        // Appended to preserve every existing $GSMVMode index. Mode 0x54 is handled by the EE GSM engine.
++        {GS_NONINTERLACED, GS_MODE_DTV_1080P, GS_FRAME, makeDISPLAY(1079, 1919, 1, 2, 48, 238), makeSYNCV(10, 1080, 2, 28, 0, 5)},
++#endif
++    }; //ends predef_vmode definition
+     // clang-format on
+     int k576p_fix, kGsDxDyOffsetSupported, fd, FIELD_fix;
+     char romver[16], romverNum[5], *pROMDate;
+ 
++    if (gGSMVMode < 0 || gGSMVMode >= (int)(sizeof(predef_vmode) / sizeof(predef_vmode[0])))
++        gGSMVMode = 0;
++
+ #ifdef _DTL_T10000
+-    if (predef_vmode[gGSMVMode].mode == GS_MODE_DTV_576P) // There is no 576P code implemented for development TOOLs.
+-        gGSMVMode = 2;                                    // Change to PAL instead.
++    if (predef_vmode[gGSMVMode].mode == GS_MODE_DTV_576P || predef_vmode[gGSMVMode].mode == GS_MODE_DTV_1080P)
++        gGSMVMode = 2; // Development tools do not support these custom HDTV modes.
+ #endif
+ 
+     k576p_fix = 0;
+diff --git a/src/guigame.c b/src/guigame.c
+index 3752c99..3babd92 100644
+--- a/src/guigame.c
++++ b/src/guigame.c
+@@ -400,6 +400,9 @@ void guiGameShowGSConfig(void)
+         "VGA 1024x768p @85Hz",
+         "VGA 1280x1024p @60Hz",
+         "VGA 1280x1024p @75Hz",
++#ifdef GSM_1080P
++        "HDTV 1080p @60Hz (EXPERIMENTAL)",
++#endif
+         NULL};
+     // clang-format on
+ 
+@@ -1070,6 +1073,19 @@ int guiGameSaveConfig(config_set_t *configSet, item_list_t *support)
+     diaGetInt(diaGSConfig, GSMCFG_GSMYOFFSET, &GSMYOffset);
+     diaGetInt(diaGSConfig, GSMCFG_GSMFIELDFIX, &GSMFIELDFix);
+ 
++#ifdef GSM_1080P
++    // Confirm three times before persisting the non-standard raster. A display that cannot sync
++    // may show a black screen; declining any prompt falls back to the safe NTSC mode.
++    if (EnableGSM && GSMVMode == 29) {
++        if (!guiMsgBox("WARNING: Forced 1080p uses a non-standard GSM signal. Your display may show no picture. Continue?", 1, NULL) ||
++            !guiMsgBox("Apply experimental 1080p output?", 1, NULL) ||
++            !guiMsgBox("Confirm 1080p mode?", 1, NULL)) {
++            GSMVMode = 0;
++            diaSetInt(diaGSConfig, GSMCFG_GSMVMODE, GSMVMode);
++        }
++    }
++#endif
++
+     if (gGSMSource == SETTINGS_PERGAME) {
+         result = configSetInt(configSet, CONFIG_ITEM_GSMSOURCE, gGSMSource);
+         if (EnableGSM != 0)
