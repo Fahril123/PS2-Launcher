@@ -10,6 +10,7 @@ index f86b786..0fb19df 100644
 +static unsigned int ps3WavePhase;
  
  static VU_VECTOR pgrad3[12] = {{1, 1, 0, 1}, {-1, 1, 0, 1}, {1, -1, 0, 1}, {-1, -1, 0, 1}, {1, 0, 1, 1}, {-1, 0, 1, 1}, {1, 0, -1, 1}, {-1, 0, -1, 1}, {0, 1, 1, 1}, {0, -1, 1, 1}, {0, 1, -1, 1}, {0, -1, -1, 1}};
+ 
 @@ -160,6 +162,10 @@ void guiInit(void)
  
          fadetbl[i] = t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
@@ -64,4 +65,3 @@ index f86b786..0fb19df 100644
          return;
      }
  
-    int x, y;
